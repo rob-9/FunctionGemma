@@ -6,8 +6,6 @@ qwen3_path = "cactus/weights/qwen3-1.7b"
 
 import json, os, time, re
 from cactus import cactus_init, cactus_complete, cactus_destroy, cactus_reset
-from google import genai
-from google.genai import types
 
 
 ############## Post-Processing Helpers ##############
@@ -712,6 +710,8 @@ _CLOUD_SYSTEM = "ALWAYS call ALL relevant tools for every action in the query. I
 
 def generate_cloud(messages, tools, verbose=False):
     """Run function calling via Gemini Cloud API."""
+    from google import genai
+    from google.genai import types
     client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
     gemini_tools = [

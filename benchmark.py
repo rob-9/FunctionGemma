@@ -395,7 +395,7 @@ def compute_f1(predicted_calls, expected_calls):
     return 2 * precision * recall / (precision + recall)
 
 
-def run_benchmark(benchmarks=None):
+def run_benchmark(benchmarks=None, verbose=False):
     """Run all benchmark cases and print results."""
     if benchmarks is None:
         benchmarks = BENCHMARKS
@@ -404,10 +404,18 @@ def run_benchmark(benchmarks=None):
     results = []
     for i, case in enumerate(benchmarks, 1):
         print(f"[{i}/{total}] Running: {case['name']} ({case['difficulty']})...", end=" ", flush=True)
-        result = generate_hybrid(case["messages"], case["tools"])
+        result = generate_hybrid(case["messages"], case["tools"], verbose=verbose)
         f1 = compute_f1(result["function_calls"], case["expected_calls"])
+        local_f1 = compute_f1(result.get("_local_calls", []), case["expected_calls"]) if result.get("_local_calls") is not None else None
         source = result.get("source", "unknown")
         print(f"F1={f1:.2f} | {result['total_time_ms']:.0f}ms | {source}")
+
+        if verbose:
+            if source == "on-device" and f1 < 1.0:
+                print(f"  ** FALSE CONFIDENCE: kept on-device but F1={f1:.2f} (expected {case['expected_calls']})")
+            elif source == "cloud (fallback)" and local_f1 is not None and local_f1 == 1.0:
+                print(f"  ** UNNECESSARY FALLBACK: local was correct (F1=1.00) but routed to cloud anyway")
+
         results.append({
             "name": case["name"],
             "difficulty": case["difficulty"],
@@ -488,4 +496,4 @@ def compute_total_score(results):
 
 
 if __name__ == "__main__":
-    run_benchmark()
+    run_benchmark(verbose=True)

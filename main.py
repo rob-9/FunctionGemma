@@ -116,7 +116,20 @@ def _extract_string_value(query, param_name, param_desc):
         if proper_nouns:
             return " ".join(proper_nouns)
 
-    if any(h in param_hint for h in ["recipient", "contact", "name", "person", "who"]):
+    # Song/music check BEFORE recipient — "Song or playlist name" contains "name"
+    # which would falsely match recipient hints
+    if any(h in param_hint for h in ["song", "music", "playlist", "track"]):
+        for prep_re in [r'\bplay\s+', r'\blisten to\s+']:
+            parts = re.split(prep_re, q, maxsplit=1, flags=re.IGNORECASE)
+            if len(parts) == 2:
+                val = parts[1].strip().rstrip(".!?,;")
+                val = re.sub(r'^(some|a|an)\s+', '', val, flags=re.IGNORECASE)
+                # Strip trailing generic words like "music", "song"
+                val = re.sub(r'\s+(?:music|song|playlist|track)s?\s*$', '', val, flags=re.IGNORECASE)
+                if val:
+                    return val
+
+    if any(h in param_hint for h in ["recipient", "contact", "person", "who"]):
         if proper_nouns:
             return proper_nouns[0]
         for prep_re in [r'\bto\s+']:
@@ -127,21 +140,14 @@ def _extract_string_value(query, param_name, param_desc):
                     return val
 
     if any(h in param_hint for h in ["message", "text", "body", "content"]):
+        # Check for quoted strings first (handles 'See you tonight', "hello", etc.)
+        m = re.search(r"""['"](.+?)['"]""", q)
+        if m:
+            return m.group(1)
         for prep_re in [r'\bsaying\s+', r'\bthat says\s+']:
             parts = re.split(prep_re, q, maxsplit=1, flags=re.IGNORECASE)
             if len(parts) == 2:
                 val = parts[1].strip().rstrip(".!?,;")
-                if val:
-                    return val
-
-    if any(h in param_hint for h in ["song", "music", "playlist", "track"]):
-        for prep_re in [r'\bplay\s+', r'\blisten to\s+']:
-            parts = re.split(prep_re, q, maxsplit=1, flags=re.IGNORECASE)
-            if len(parts) == 2:
-                val = parts[1].strip().rstrip(".!?,;")
-                val = re.sub(r'^(some|a|an)\s+', '', val, flags=re.IGNORECASE)
-                # Strip trailing generic words like "music", "song"
-                val = re.sub(r'\s+(?:music|song|playlist|track)s?\s*$', '', val, flags=re.IGNORECASE)
                 if val:
                     return val
 
@@ -189,7 +195,18 @@ def _extract_integer_value(query, param_name, param_desc):
     q = query.strip()
     param_hint = (param_name + " " + (param_desc or "")).lower()
 
-    # For hour/minute, parse time expressions
+    # Duration params (set_timer's "minutes") — check BEFORE clock-minute
+    # "minutes" (plural) contains "minute" as substring, so order matters
+    if param_name == "minutes" or any(h in param_hint for h in ["duration", "timer", "length"]):
+        m = re.search(r'(\d+)\s*(?:minute|min|hour|hr)', q, re.IGNORECASE)
+        if m:
+            return int(m.group(1))
+        # Fallback: any number in the query
+        nums = re.findall(r'\b(\d+)\b', q)
+        if nums:
+            return int(nums[0])
+
+    # For hour, parse time expressions
     if any(h in param_hint for h in ["hour"]):
         m = re.search(r'(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)?', q)
         if m:
@@ -210,16 +227,12 @@ def _extract_integer_value(query, param_name, param_desc):
                 hour = 0
             return hour
 
+    # Clock minute (set_alarm's "minute" singular)
     if any(h in param_hint for h in ["minute"]):
         m = re.search(r'(\d{1,2}):(\d{2})', q)
         if m:
             return int(m.group(2))
         return 0
-
-    if any(h in param_hint for h in ["duration", "minutes", "timer", "length"]):
-        m = re.search(r'(\d+)\s*(?:minute|min|hour|hr)', q, re.IGNORECASE)
-        if m:
-            return int(m.group(1))
 
     # Generic: find all numbers, return the first one
     nums = re.findall(r'\b(\d+)\b', q)
@@ -458,6 +471,110 @@ def _might_be_multi_intent(query):
     return ' and ' in q or ', ' in q
 
 
+def _correct_tool_name(call, tools, sub_query, verbose=False):
+    """If sub-query strongly suggests a different tool, swap the tool name.
+
+    Uses prefix-matching to handle stems (e.g., 'remind' → 'reminder').
+    Only swaps if a strictly better match exists.
+    """
+    q_words = set(re.findall(r'[a-z]{3,}', sub_query.lower()))
+    returned_name = call.get("name", "")
+
+    def tool_query_score(tool_name):
+        score = 0
+        for t_word in tool_name.split("_"):
+            if len(t_word) < 3:
+                continue
+            for q_word in q_words:
+                if q_word == t_word or q_word.startswith(t_word) or t_word.startswith(q_word):
+                    score += len(min(q_word, t_word, key=len))
+                    break
+        return score
+
+    returned_score = tool_query_score(returned_name)
+    best_name = returned_name
+    best_score = returned_score
+
+    for t in tools:
+        if t["name"] == returned_name:
+            continue
+        score = tool_query_score(t["name"])
+        if score > best_score:
+            best_score = score
+            best_name = t["name"]
+
+    if best_name != returned_name:
+        if verbose:
+            print(f"  [correct] {returned_name} -> {best_name} (score {best_score} vs {returned_score}) for {sub_query!r}")
+        call["name"] = best_name
+        call["arguments"] = {}  # Reset args since tool changed
+
+
+def _match_tool_from_query(query, tools, verbose=False):
+    """Last-resort heuristic: match a sub-query to a tool when FunctionGemma fails.
+
+    Two strategies:
+    1. Keyword overlap between query and tool name/description
+    2. Param fillability — which tool's required params can we extract from the query
+
+    Returns a call dict with empty args (to be filled by postprocessing), or None.
+    """
+    q = query.lower()
+    best_tool = None
+    best_score = 0
+
+    # Strategy 1: keyword overlap
+    for t in tools:
+        score = 0
+        name_words = set(t["name"].split("_"))
+        desc_words = set(re.findall(r'[a-z]+', t["description"].lower()))
+        all_keywords = name_words | desc_words
+
+        for word in all_keywords:
+            if len(word) >= 3 and word in q:
+                score += 1
+
+        if score > best_score:
+            best_score = score
+            best_tool = t
+
+    if best_tool and best_score >= 1:
+        if verbose:
+            print(f"      HEURISTIC MATCH (keyword): {best_tool['name']} (score={best_score}) for {query!r}")
+        return {"name": best_tool["name"], "arguments": {}}
+
+    # Strategy 2: which tool's required params can we fill from the query?
+    best_tool = None
+    best_filled = 0
+    for t in tools:
+        props = t.get("parameters", {}).get("properties", {})
+        required = set(t.get("parameters", {}).get("required", []))
+        filled_required = 0
+        for param_name in required:
+            param_schema = props.get(param_name, {})
+            param_type = param_schema.get("type", "string")
+            param_desc = param_schema.get("description", "")
+            if param_type == "string":
+                val = _extract_string_value(query, param_name, param_desc)
+                if val:
+                    filled_required += 1
+            elif param_type == "integer":
+                val = _extract_integer_value(query, param_name, param_desc)
+                if val is not None:
+                    filled_required += 1
+        # Only consider tools where ALL required params can be filled
+        if filled_required == len(required) and filled_required > best_filled:
+            best_filled = filled_required
+            best_tool = t
+
+    if best_tool:
+        if verbose:
+            print(f"      HEURISTIC MATCH (params): {best_tool['name']} (filled={best_filled}) for {query!r}")
+        return {"name": best_tool["name"], "arguments": {}}
+
+    return None
+
+
 def generate_cactus_split(messages, tools, verbose=False):
     """Use Qwen3 to split multi-intent queries, then run each through FunctionGemma."""
     query = next((m["content"] for m in messages if m["role"] == "user"), "")
@@ -482,6 +599,14 @@ def generate_cactus_split(messages, tools, verbose=False):
         if verbose:
             print(f"  [split] sub-query {i}/{len(sub_queries)}: {sq!r}")
         sub_result = generate_cactus([{"role": "user", "content": sq}], tools, verbose)
+        # If FunctionGemma produced no calls, try heuristic tool matching
+        if not sub_result["function_calls"]:
+            heuristic = _match_tool_from_query(sq, tools, verbose)
+            if heuristic:
+                sub_result["function_calls"] = [heuristic]
+        # Tag each call with its sub-query for targeted postprocessing
+        for fc in sub_result["function_calls"]:
+            fc["_sub_query"] = sq
         all_calls.extend(sub_result["function_calls"])
         total_time += sub_result["total_time_ms"]
         min_confidence = min(min_confidence, sub_result["confidence"])
@@ -688,13 +813,31 @@ def generate_hybrid(messages, tools, confidence_threshold=0.95, verbose=False):
     query = next((m["content"] for m in messages if m["role"] == "user"), "")
     local = generate_cactus_split(messages, tools, verbose=verbose)
 
+    # Correct tool names based on query keywords (before postprocessing)
+    for c in local["function_calls"]:
+        sq = c.get("_sub_query", query)
+        _correct_tool_name(c, tools, sq, verbose=verbose)
+
     # Apply postprocessing to fix missing/hallucinated args from on-device
+    # Use sub-query text when available (from split), fall back to full query
     postprocessed = []
     for c in local["function_calls"]:
-        pp = _postprocess_call(c, tools, query, verbose=verbose)
+        pp_query = c.pop("_sub_query", query)
+        pp = _postprocess_call(c, tools, pp_query, verbose=verbose)
+        # If sub-query postprocessing failed but we have the full query, retry with it
+        if pp is None and pp_query != query:
+            pp = _postprocess_call(c, tools, query, verbose=verbose)
         if pp:
             postprocessed.append(pp)
     local["function_calls"] = postprocessed
+
+    # Heuristic fallback: if no calls after postprocessing, try matching from query
+    if not local["function_calls"]:
+        heuristic = _match_tool_from_query(query, tools, verbose)
+        if heuristic:
+            pp = _postprocess_call(heuristic, tools, query, verbose=verbose)
+            if pp:
+                local["function_calls"] = [pp]
 
     valid, reason = _validate_local(local, tools, query=query)
 

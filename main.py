@@ -4,7 +4,7 @@ sys.path.insert(0, "cactus/python/src")
 functiongemma_path = "cactus/weights/functiongemma-270m-it"
 qwen3_path = "cactus/weights/qwen3-1.7b"
 
-import json, os, time
+import json, os, time, re
 from cactus import cactus_init, cactus_complete, cactus_destroy, cactus_reset
 from google import genai
 from google.genai import types

@@ -2,68 +2,15 @@
 import sys
 sys.path.insert(0, "cactus/python/src")
 functiongemma_path = "cactus/weights/functiongemma-270m-it"
+qwen3_path = "cactus/weights/qwen3-1.7b"
 
-import json, os, time, re, math
+import json, os, time, re
 from cactus import cactus_init, cactus_complete, cactus_destroy, cactus_reset
 from google import genai
 from google.genai import types
 
-DEFAULT_SYSTEM_PROMPT = (
-    "You are a function-calling assistant. "
-    "Return function calls only. "
-    "For multi-intent requests, return one call per intent in the same order as the user. "
-    "Use exact argument values from the user text (no paraphrasing, no invented values). "
-    "Use lowercase for text arguments. "
-    "Do not add punctuation or articles. "
-    "Include all required parameters for each call. "
-    "If a required value is missing or unclear, return no call for that intent."
-)
-SYSTEM_PROMPT = os.environ.get("FUNCTIONGEMMA_SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT)
 
-
-def set_system_prompt(prompt):
-    """Override the active system prompt used for on-device calls."""
-    global SYSTEM_PROMPT
-    SYSTEM_PROMPT = (prompt or DEFAULT_SYSTEM_PROMPT).strip()
-
-
-def get_system_prompt():
-    """Get the active system prompt used for on-device calls."""
-    return SYSTEM_PROMPT
-
-
-_ACTION_VERBS = {
-    "set", "get", "check", "send", "text", "play", "find", "look", "search",
-    "remind", "create", "call", "wake", "tell", "show", "open", "start",
-    "stop", "turn", "book", "order", "buy", "schedule", "cancel", "delete",
-    "message", "put", "make", "add", "read", "write", "run", "track",
-    "navigate", "translate", "convert", "calculate", "launch", "toggle",
-}
-
-
-def _split_intents(query):
-    """Split a multi-intent query using commas/then and `and` before action verbs."""
-    text = (query or "").strip()
-    if not text:
-        return []
-
-    first_pass = re.split(r"\s*(?:,|;|\bthen\b)\s*", text, flags=re.IGNORECASE)
-    verb_pattern = "|".join(sorted(_ACTION_VERBS, key=len, reverse=True))
-
-    intents = []
-    for chunk in first_pass:
-        chunk = chunk.strip()
-        if not chunk:
-            continue
-        split_on_and = re.split(
-            rf"\s+and\s+(?=(?:{verb_pattern})\b)",
-            chunk,
-            flags=re.IGNORECASE,
-        )
-        intents.extend([part.strip(" ,") for part in split_on_and if part.strip(" ,")])
-
-    return intents if intents else [text]
-
+############## Post-Processing Helpers ##############
 
 def _repair_call(call, tools):
     """Auto-repair a function call. Returns repaired call dict, or None if unrecoverable."""
@@ -118,16 +65,6 @@ def _repair_call(call, tools):
     return {"name": name, "arguments": args}
 
 
-def _simplify_query(query):
-    """Strip filler words for a cleaner prompt to the model."""
-    q = re.sub(
-        r'\b(please|could you|can you|i want to|i need to|i\'d like to)\b',
-        '', query, flags=re.IGNORECASE
-    )
-    q = re.sub(r'\s+', ' ', q).strip()
-    return q if q else query
-
-
 def _extract_string_value(query, param_name, param_desc):
     """Extract a string param value from the user's query.
 
@@ -137,7 +74,6 @@ def _extract_string_value(query, param_name, param_desc):
     q = query.strip().rstrip(".!?")
 
     # Preposition-based extraction: split on common preps and take segments
-    # Map of prepositions → what typically follows them
     prep_patterns = [
         (r'\bsaying\s+', None),       # "saying good morning" → message
         (r'\bthat says\s+', None),     # "that says hello"
@@ -156,8 +92,6 @@ def _extract_string_value(query, param_name, param_desc):
         parts = re.split(prep_re, q, maxsplit=1, flags=re.IGNORECASE)
         if len(parts) == 2:
             segment = parts[1].strip().rstrip(".!?,;")
-            # Remove trailing prepositional phrases (e.g., "Paris at 3:00 PM" → "Paris")
-            # Only keep text before the next preposition
             sub = re.split(r'\s+(?:in|at|to|for|about|saying|and)\s+', segment, maxsplit=1, flags=re.IGNORECASE)
             candidates.append(sub[0].strip())
 
@@ -165,18 +99,13 @@ def _extract_string_value(query, param_name, param_desc):
     words = q.split()
     proper_nouns = [w.strip(".,!?;:'\"") for w in words[1:] if w[0].isupper()] if len(words) > 1 else []
 
-    # Extract numbers
-    numbers_in_query = re.findall(r'\b\d+\b', q)
-
     # Extract time patterns
     time_patterns = re.findall(r'\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)?', q)
 
     # Score candidates based on param name/description hints
     param_hint = (param_name + " " + (param_desc or "")).lower()
 
-    # Direct hint matching
     if any(h in param_hint for h in ["location", "city", "place", "where"]):
-        # Look for text after "in" or "at"
         for prep_re in [r'\bin\s+', r'\bat\s+']:
             parts = re.split(prep_re, q, maxsplit=1, flags=re.IGNORECASE)
             if len(parts) == 2:
@@ -184,15 +113,12 @@ def _extract_string_value(query, param_name, param_desc):
                 val = val.strip().rstrip(".!?,;")
                 if val:
                     return val
-        # Fallback: proper nouns
         if proper_nouns:
             return " ".join(proper_nouns)
 
     if any(h in param_hint for h in ["recipient", "contact", "name", "person", "who"]):
-        # Look for proper nouns
         if proper_nouns:
             return proper_nouns[0]
-        # After "to"
         for prep_re in [r'\bto\s+']:
             parts = re.split(prep_re, q, maxsplit=1, flags=re.IGNORECASE)
             if len(parts) == 2:
@@ -201,7 +127,6 @@ def _extract_string_value(query, param_name, param_desc):
                     return val
 
     if any(h in param_hint for h in ["message", "text", "body", "content"]):
-        # After "saying" or "that says"
         for prep_re in [r'\bsaying\s+', r'\bthat says\s+']:
             parts = re.split(prep_re, q, maxsplit=1, flags=re.IGNORECASE)
             if len(parts) == 2:
@@ -210,12 +135,10 @@ def _extract_string_value(query, param_name, param_desc):
                     return val
 
     if any(h in param_hint for h in ["song", "music", "playlist", "track"]):
-        # After "play" or "listen to"
         for prep_re in [r'\bplay\s+', r'\blisten to\s+']:
             parts = re.split(prep_re, q, maxsplit=1, flags=re.IGNORECASE)
             if len(parts) == 2:
                 val = parts[1].strip().rstrip(".!?,;")
-                # Remove filler like "some" or "a"
                 val = re.sub(r'^(some|a|an)\s+', '', val, flags=re.IGNORECASE)
                 # Strip trailing generic words like "music", "song"
                 val = re.sub(r'\s+(?:music|song|playlist|track)s?\s*$', '', val, flags=re.IGNORECASE)
@@ -225,7 +148,6 @@ def _extract_string_value(query, param_name, param_desc):
     if any(h in param_hint for h in ["time", "when", "schedule"]):
         if time_patterns:
             return time_patterns[0]
-        # After "at" that looks like a time
         for prep_re in [r'\bat\s+']:
             parts = re.split(prep_re, q, maxsplit=1, flags=re.IGNORECASE)
             if len(parts) == 2:
@@ -235,7 +157,6 @@ def _extract_string_value(query, param_name, param_desc):
                     return val
 
     if any(h in param_hint for h in ["title", "subject", "topic", "reminder"]):
-        # After "about" or "to" (for reminders like "remind me to X")
         for prep_re in [r'\babout\s+', r'\bto\s+']:
             parts = re.split(prep_re, q, maxsplit=1, flags=re.IGNORECASE)
             if len(parts) == 2:
@@ -246,10 +167,8 @@ def _extract_string_value(query, param_name, param_desc):
                     return val
 
     if any(h in param_hint for h in ["query", "search", "look", "find"]):
-        # Proper nouns or text after action verb
         if proper_nouns:
             return proper_nouns[0]
-        # After the action verb, take the first noun-like word
         for prep_re in [r'\b(?:find|search|look up|look for)\s+']:
             parts = re.split(prep_re, q, maxsplit=1, flags=re.IGNORECASE)
             if len(parts) == 2:
@@ -272,7 +191,6 @@ def _extract_integer_value(query, param_name, param_desc):
 
     # For hour/minute, parse time expressions
     if any(h in param_hint for h in ["hour"]):
-        # Look for "H:MM AM/PM" or "H AM/PM"
         m = re.search(r'(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)?', q)
         if m:
             hour = int(m.group(1))
@@ -282,7 +200,6 @@ def _extract_integer_value(query, param_name, param_desc):
             elif ampm == "AM" and hour == 12:
                 hour = 0
             return hour
-        # "H AM/PM" without minutes
         m = re.search(r'(\d{1,2})\s*(AM|PM|am|pm)', q)
         if m:
             hour = int(m.group(1))
@@ -297,11 +214,9 @@ def _extract_integer_value(query, param_name, param_desc):
         m = re.search(r'(\d{1,2}):(\d{2})', q)
         if m:
             return int(m.group(2))
-        # If no colon, assume 0 minutes (e.g., "10 AM" → minute=0)
         return 0
 
     if any(h in param_hint for h in ["duration", "minutes", "timer", "length"]):
-        # Find the number closest to time-related words
         m = re.search(r'(\d+)\s*(?:minute|min|hour|hr)', q, re.IGNORECASE)
         if m:
             return int(m.group(1))
@@ -317,8 +232,6 @@ def _extract_integer_value(query, param_name, param_desc):
 def _postprocess_call(call, tools, query, verbose=False):
     """Post-process a function call: fill missing/hallucinated args from the query.
 
-    Takes a call that has already been through _repair_call (or raw from model),
-    checks for missing or suspicious values, and tries to fill them from the query.
     Returns the improved call dict, or None if unrecoverable.
     """
     tool_map = {t["name"]: t for t in tools}
@@ -354,13 +267,11 @@ def _postprocess_call(call, tools, query, verbose=False):
             query_lower = query.lower()
             val_lower = current_val.lower().strip()
 
-            # Check if the value (or a core part of it) appears in the query
             val_words = set(re.findall(r'[a-zA-Z]{2,}', val_lower))
             stop = {"the", "a", "an", "is", "in", "at", "to", "for", "of", "and", "or", "my", "me", "i",
                     "reminder", "about", "set", "create", "get", "send", "play", "find", "search"}
             meaningful_words = val_words - stop
 
-            # Also check if it looks like a hallucinated datetime (ISO format not in query)
             is_iso_datetime = bool(re.match(r'\d{4}-\d{2}-\d{2}', val_lower))
 
             if is_iso_datetime and val_lower not in query_lower:
@@ -373,7 +284,6 @@ def _postprocess_call(call, tools, query, verbose=False):
                 needs_fill = True
             elif not meaningful_words and len(val_lower) > 0:
                 # No meaningful alpha words — could be a numeric/time-like hallucination
-                # e.g., "3200" instead of "3:00 PM", "07:00" instead of "7:00 AM"
                 if val_lower not in query_lower:
                     if verbose:
                         print(f"  [postprocess] {param_name}={current_val!r} is non-alpha and not in query")
@@ -406,25 +316,217 @@ def _postprocess_call(call, tools, query, verbose=False):
     return _repair_call(call_out, tools)
 
 
+############## Model Singletons ##############
+
+_fgemma = None
+_qwen3 = None
+
+def _get_fgemma():
+    global _fgemma
+    if _fgemma is None:
+        _fgemma = cactus_init(functiongemma_path)
+    return _fgemma
+
+def _get_qwen3():
+    global _qwen3
+    if _qwen3 is None:
+        _qwen3 = cactus_init(qwen3_path)
+    return _qwen3
+
+
+############## FunctionGemma Output Recovery ##############
+
+def _recover_function_calls(raw_text):
+    """Extract function calls from raw/malformed FunctionGemma output."""
+    if not raw_text:
+        return []
+    text = raw_text.replace('\uff1a', ':')
+    calls = []
+
+    for match in re.finditer(r'call:(\w+)\{([^}]*)\}', text):
+        name, args_str = match.group(1), match.group(2)
+        args = {}
+        for am in re.finditer(r'(\w+):<escape>(.*?)<escape>', args_str):
+            k, v = am.group(1), am.group(2)
+            try: v = int(v)
+            except ValueError:
+                try: v = float(v)
+                except ValueError: pass
+            args[k] = v
+        if not args:
+            for pair in args_str.split(','):
+                if ':' in pair:
+                    k, v = pair.split(':', 1)
+                    k, v = k.strip(), v.strip()
+                    if not k: continue
+                    try: v = int(v)
+                    except ValueError:
+                        try: v = float(v)
+                        except ValueError: pass
+                    args[k] = v
+        if name:
+            calls.append({"name": name, "arguments": args})
+
+    if not calls:
+        for match in re.finditer(r'"name"\s*:\s*"(\w+)"', text):
+            name = match.group(1)
+            rest = text[match.end():]
+            args = {}
+            for am in re.finditer(r'(\w+)[:\uff1a]<escape>(.*?)<escape>', rest):
+                k, v = am.group(1), am.group(2)
+                try: v = int(v)
+                except ValueError:
+                    try: v = float(v)
+                    except ValueError: pass
+                args[k] = v
+                break
+            if name:
+                calls.append({"name": name, "arguments": args})
+
+    return calls
+
+
+def _fix_arguments(function_calls):
+    """abs() for negative numbers, strip strings, flatten nested dicts."""
+    for call in function_calls:
+        args = call.get("arguments", {})
+        for key in list(args):
+            val = args[key]
+            if isinstance(val, dict):
+                if key in val:
+                    args[key] = val[key]
+                elif len(val) == 1:
+                    args[key] = next(iter(val.values()))
+            elif isinstance(val, (int, float)) and val < 0:
+                args[key] = abs(int(val)) if isinstance(val, int) else abs(val)
+            elif isinstance(val, str):
+                args[key] = val.strip()
+    return function_calls
+
+
+############## Query Splitting (Qwen3-1.7B) ##############
+
+_SPLIT_PROMPT = 'Split this into separate actions. Return ONLY a JSON array of strings like ["action 1", "action 2"]. No objects, no thinking.\n\nRequest: '
+
+
+def split_query_qwen(query, verbose=False):
+    """Use Qwen3-1.7B to split a multi-intent query into sub-queries."""
+    model = _get_qwen3()
+    cactus_reset(model)
+
+    start = time.time()
+    raw = cactus_complete(
+        model,
+        [{"role": "user", "content": _SPLIT_PROMPT + f'"{query}"'}],
+        tools=[],
+        max_tokens=256,
+        temperature=0,
+        stop_sequences=["<|im_end|>"],
+    )
+    split_time = (time.time() - start) * 1000
+
+    try:
+        parsed = json.loads(raw)
+        response = parsed.get("response", "")
+    except json.JSONDecodeError:
+        response = raw
+
+    # Strip Qwen3 thinking blocks (closed or unclosed)
+    response = re.sub(r'<think>.*?</think>\s*', '', response, flags=re.DOTALL)
+    response = re.sub(r'<think>.*', '', response, flags=re.DOTALL)  # unclosed
+
+    try:
+        match = re.search(r'\[.*?\]', response, re.DOTALL)
+        if match:
+            parts = json.loads(match.group())
+            if isinstance(parts, list) and all(isinstance(p, str) for p in parts):
+                parts = [p.strip() for p in parts if p.strip()]
+                if verbose:
+                    print(f"  [split] qwen3 ({split_time:.0f}ms): {json.dumps(parts)}")
+                return parts if parts else [query]
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    if verbose:
+        print(f"  [split] qwen3 ({split_time:.0f}ms) parse failed, raw: {response!r}")
+    return [query]
+
+
+def _might_be_multi_intent(query):
+    """Fast check: does the query look like it could have multiple actions?"""
+    q = query.lower()
+    return ' and ' in q or ', ' in q
+
+
+def generate_cactus_split(messages, tools, verbose=False):
+    """Use Qwen3 to split multi-intent queries, then run each through FunctionGemma."""
+    query = next((m["content"] for m in messages if m["role"] == "user"), "")
+
+    if not _might_be_multi_intent(query):
+        if verbose:
+            print(f"  [split] single intent, skipping qwen3")
+        return generate_cactus(messages, tools, verbose)
+
+    sub_queries = split_query_qwen(query, verbose)
+
+    if len(sub_queries) <= 1:
+        return generate_cactus(messages, tools, verbose)
+
+    all_calls = []
+    total_time = 0
+    min_confidence = 1.0
+    cloud_handoff = False
+    parse_failed = False
+
+    for i, sq in enumerate(sub_queries, 1):
+        if verbose:
+            print(f"  [split] sub-query {i}/{len(sub_queries)}: {sq!r}")
+        sub_result = generate_cactus([{"role": "user", "content": sq}], tools, verbose)
+        all_calls.extend(sub_result["function_calls"])
+        total_time += sub_result["total_time_ms"]
+        min_confidence = min(min_confidence, sub_result["confidence"])
+        if sub_result.get("_cloud_handoff"):
+            cloud_handoff = True
+        if sub_result.get("_parse_failed"):
+            parse_failed = True
+
+    if verbose:
+        names = [c["name"] for c in all_calls]
+        print(f"  [split] merged: {len(all_calls)} calls {names} | conf={min_confidence:.4f} | {total_time:.0f}ms")
+
+    merged = {
+        "function_calls": all_calls,
+        "total_time_ms": total_time,
+        "confidence": min_confidence,
+    }
+    if cloud_handoff:
+        merged["_cloud_handoff"] = True
+    if parse_failed:
+        merged["_parse_failed"] = True
+    return merged
+
+
+############## On-Device Inference (FunctionGemma) ##############
+
+_FGEMMA_SYSTEM = "Always return at least one tool. Never respond with text or questions. Use exact words from the user's message as argument values. Do not add emails, URLs, or extra text."
+
 def generate_cactus(messages, tools, verbose=False):
     """Run function calling on-device via FunctionGemma + Cactus."""
-    model = cactus_init(functiongemma_path)
+    model = _get_fgemma()
+    cactus_reset(model)
 
-    cactus_tools = [{
-        "type": "function",
-        "function": t,
-    } for t in tools]
+    cactus_tools = [{"type": "function", "function": t} for t in tools]
 
     raw_str = cactus_complete(
         model,
-        [{"role": "system", "content": SYSTEM_PROMPT}] + messages,
+        [{"role": "system", "content": _FGEMMA_SYSTEM}] + messages,
         tools=cactus_tools,
         force_tools=True,
         max_tokens=256,
         stop_sequences=["<|im_end|>", "<end_of_turn>"],
+        temperature=0,
+        tool_rag_top_k=0,
     )
-
-    cactus_destroy(model)
 
     if verbose:
         print(f"  [cactus] raw output: {raw_str!r}")
@@ -432,28 +534,45 @@ def generate_cactus(messages, tools, verbose=False):
     try:
         raw = json.loads(raw_str)
     except json.JSONDecodeError:
+        recovered = _fix_arguments(_recover_function_calls(raw_str))
+        conf_match = re.search(r'"confidence"\s*:\s*([\d.]+)', raw_str)
+        recovered_conf = float(conf_match.group(1)) if conf_match and recovered else 0
         if verbose:
-            print(f"  [cactus] JSON parse FAILED — raw was: {raw_str!r}")
+            print(f"      JSON PARSE FAILED — recovered {len(recovered)} call(s) conf={recovered_conf:.4f}")
+            for fc in recovered:
+                print(f"      -> {fc['name']}({json.dumps(fc.get('arguments', {}))})")
         return {
-            "function_calls": [],
+            "function_calls": recovered,
             "total_time_ms": 0,
-            "confidence": 0,
-            "_parse_failed": True,
+            "confidence": recovered_conf,
+            "_parse_failed": not recovered,
         }
 
+    function_calls = raw.get("function_calls", [])
     if verbose:
-        print(f"  [cactus] success={raw.get('success')}  cloud_handoff={raw.get('cloud_handoff')}")
-        print(f"  [cactus] response text: {raw.get('response')!r}")
-        print(f"  [cactus] confidence={raw.get('confidence')}  ttft={raw.get('time_to_first_token_ms')}ms  total={raw.get('total_time_ms')}ms")
-        print(f"  [cactus] prefill_tokens={raw.get('prefill_tokens')}  decode_tokens={raw.get('decode_tokens')}  decode_tps={raw.get('decode_tps')}")
-        if raw.get("function_calls"):
-            for fc in raw["function_calls"]:
-                print(f"  [cactus] extracted call: {fc['name']}({json.dumps(fc.get('arguments', {}))})")
-        else:
-            print(f"  [cactus] extracted calls: (none)")
+        conf = raw.get("confidence", 0)
+        total = raw.get("total_time_ms", 0)
+        resp = raw.get("response", "")
+        print(f"      conf={conf:.4f}  total={total:.0f}ms  prefill={raw.get('prefill_tokens',0)}  decode={raw.get('decode_tokens',0)}  tps={raw.get('decode_tps',0):.1f}")
+        if raw.get("cloud_handoff"):
+            print(f"      CLOUD_HANDOFF")
+        if resp:
+            print(f"      response: {resp!r}")
+        for fc in function_calls:
+            print(f"      -> {fc['name']}({json.dumps(fc.get('arguments', {}))})")
+        if not function_calls:
+            print(f"      -> (no calls)")
+
+    # Recover from response text if C++ parser found nothing
+    if not function_calls:
+        function_calls = _recover_function_calls(raw.get("response", ""))
+        if verbose and function_calls:
+            print(f"      RECOVERED {len(function_calls)} call(s) from response text")
+            for fc in function_calls:
+                print(f"      -> {fc['name']}({json.dumps(fc.get('arguments', {}))})")
 
     result = {
-        "function_calls": raw.get("function_calls", []),
+        "function_calls": _fix_arguments(function_calls),
         "total_time_ms": raw.get("total_time_ms", 0),
         "confidence": raw.get("confidence", 0),
     }
@@ -462,7 +581,11 @@ def generate_cactus(messages, tools, verbose=False):
     return result
 
 
-def generate_cloud(messages, tools):
+############## Cloud Inference (Gemini) ##############
+
+_CLOUD_SYSTEM = "ALWAYS call ALL relevant tools for every action in the query. If the query has multiple actions, return multiple function calls. Use the shortest accurate argument values. Strip trailing punctuation. For music/song args, use only the genre or title keyword (e.g. 'jazz' not 'jazz music'). For reminder titles, preserve the action phrase as-is from the query."
+
+def generate_cloud(messages, tools, verbose=False):
     """Run function calling via Gemini Cloud API."""
     client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
@@ -484,8 +607,7 @@ def generate_cloud(messages, tools):
         ])
     ]
 
-    contents = [m["content"] for m in messages if m["role"] == "user"]
-
+    contents = [_CLOUD_SYSTEM] + [m["content"] for m in messages if m["role"] == "user"]
     start_time = time.time()
 
     system_instruction = (
@@ -517,294 +639,98 @@ def generate_cloud(messages, tools):
                     "arguments": dict(part.function_call.args),
                 })
 
+    if verbose:
+        print(f"  [cloud] {total_time_ms:.0f}ms")
+        for fc in function_calls:
+            print(f"  [cloud] -> {fc['name']}({json.dumps(fc.get('arguments', {}))})")
+        if not function_calls:
+            print(f"  [cloud] -> (no calls)")
+
     return {
         "function_calls": function_calls,
         "total_time_ms": total_time_ms,
     }
 
 
-def _extract_calls_from_response(response_text, tools):
-    """Try to extract function calls from malformed response text.
+############## Validation & Hybrid Routing ##############
 
-    FunctionGemma sometimes outputs calls in non-standard formats like:
-      call:get_weather{location:"Paris"}
-      <start_function_declaration>call:create_reminder{}
-    This parser tries to recover those calls generically.
-    Also handles truncated calls where the value is missing (e.g., call:get_weather{location:})
-    """
-    if not response_text:
-        return []
-
-    # Normalize fullwidth colons (U+FF1A) to regular colons
-    response_text = response_text.replace('\uff1a', ':')
-
-    tool_names = {t["name"] for t in tools}
-    calls = []
-
-    # Pattern: call:function_name{...} or call:function_name({...})
-    # Also match truncated calls with empty/missing values
-    for m in re.finditer(r'call:(\w+)\s*\{([^}]*)\}?', response_text):
-        fname = m.group(1)
-        if fname not in tool_names:
-            continue
-        args_str = m.group(2).strip()
-        args = {}
-        if args_str:
-            # First, replace <escape> tags with quotes for easier parsing
-            clean_args = args_str.replace('<escape>', '"')
-            # Parse key:value or key:"value" pairs
-            for kv in re.finditer(r'(\w+)\s*:\s*"([^"]*)"', clean_args):
-                key = kv.group(1)
-                val = kv.group(2).strip()
-                # Try to convert to int if it looks numeric
-                try:
-                    val = int(val)
-                except ValueError:
-                    try:
-                        val = float(val)
-                    except ValueError:
-                        pass
-                args[key] = val
-            # Also try unquoted values (integers, etc.) for keys not yet found
-            for kv in re.finditer(r'(\w+)\s*:\s*(-?\d+(?:\.\d+)?)', clean_args):
-                key = kv.group(1)
-                if key not in args:  # Don't override quoted values
-                    val = kv.group(2)
-                    try:
-                        val = int(val)
-                    except ValueError:
-                        val = float(val)
-                    args[key] = val
-        calls.append({"name": fname, "arguments": args})
-
-    # Also try to find truncated calls from raw token output
-    # Pattern: function names that appear after "call:" even without proper braces
+def _validate_local(local, tools, query=""):
+    """Check if local result is trustworthy: has calls, known tools, required args, no hallucinations."""
+    calls = local.get("function_calls", [])
     if not calls:
-        for m in re.finditer(r'call:(\w+)', response_text):
-            fname = m.group(1)
-            if fname in tool_names:
-                calls.append({"name": fname, "arguments": {}})
-                break  # only take the first one
+        return False, "no function calls"
+    tool_map = {t["name"]: t for t in tools}
+    query_lower = query.lower()
+    for fc in calls:
+        tool_def = tool_map.get(fc["name"])
+        if not tool_def:
+            return False, f"unknown tool {fc['name']}"
+        required = tool_def.get("parameters", {}).get("required", [])
+        args = fc.get("arguments", {})
+        for req in required:
+            if req not in args or args[req] == "" or args[req] is None:
+                return False, f"missing required arg '{req}' in {fc['name']}"
+        if query_lower:
+            for k, v in args.items():
+                if isinstance(v, dict) or isinstance(v, list):
+                    return False, f"non-primitive arg {k}={v!r}"
+                if isinstance(v, str) and v.strip():
+                    if v.lower() not in query_lower:
+                        return False, f"hallucinated arg {k}={v!r}"
+                elif isinstance(v, (int, float)) and v != 0:
+                    if str(int(v)) not in query:
+                        return False, f"hallucinated arg {k}={v}"
+    return True, None
 
-    return calls
 
+def generate_hybrid(messages, tools, confidence_threshold=0.95, verbose=False):
+    """Hybrid: on-device first (with Qwen3 splitting + postprocessing), cloud fallback if untrusted."""
+    query = next((m["content"] for m in messages if m["role"] == "user"), "")
+    local = generate_cactus_split(messages, tools, verbose=verbose)
 
-def _run_on_device(user_content, tools, verbose=False):
-    """Run a single on-device inference. Returns (calls_list, time_ms, parse_failed).
+    # Apply postprocessing to fix missing/hallucinated args from on-device
+    postprocessed = []
+    for c in local["function_calls"]:
+        pp = _postprocess_call(c, tools, query, verbose=verbose)
+        if pp:
+            postprocessed.append(pp)
+    local["function_calls"] = postprocessed
 
-    Applies post-processing to fill missing/hallucinated args from the query.
-    """
-    model = cactus_init(functiongemma_path)
-    cactus_tools = [{"type": "function", "function": t} for t in tools]
-
-    # Collect tokens for debugging
-    _tokens = []
-    def _token_callback(token_text, token_id, user_data):
-        _tokens.append({"id": token_id, "text": token_text})
-
-    raw_str = cactus_complete(
-        model,
-        [{"role": "system", "content": SYSTEM_PROMPT},
-         {"role": "user", "content": user_content}],
-        tools=cactus_tools,
-        force_tools=True,
-        max_tokens=256,
-        stop_sequences=["<|im_end|>", "<end_of_turn>"],
-        tool_rag_top_k=5,
-        callback=_token_callback,
-    )
-    cactus_destroy(model)
+    valid, reason = _validate_local(local, tools, query=query)
 
     if verbose:
-        print(f"  [on-device] input: {user_content!r}")
-        print(f"  [on-device] raw: {raw_str!r}")
-        # Show decoded token stream
-        token_texts = [t["text"].decode("utf-8", errors="replace") if isinstance(t["text"], bytes) else str(t["text"]) for t in _tokens]
-        print(f"  [on-device] token_count={len(_tokens)} token_stream: {''.join(token_texts)}")
-        print(f"  [on-device] token_ids: {[t['id'] for t in _tokens]}")
+        print(f"\n  [hybrid] query: {query!r}")
+        print(f"  [hybrid] tools: {[t['name'] for t in tools]}")
+        print(f"  [hybrid] conf={local['confidence']:.4f}  valid={valid}  time={local['total_time_ms']:.0f}ms")
+        for fc in local["function_calls"]:
+            print(f"  [hybrid] local -> {fc['name']}({json.dumps(fc.get('arguments', {}))})")
+        if not local["function_calls"]:
+            print(f"  [hybrid] local -> (no calls)")
+        if not valid:
+            print(f"  [hybrid] validation: {reason}")
 
-    try:
-        raw = json.loads(raw_str)
-    except json.JSONDecodeError:
+    if valid and local["confidence"] >= confidence_threshold:
         if verbose:
-            print(f"  [on-device] JSON parse FAILED, trying raw extraction")
-        # Try to extract calls from the malformed raw string
-        extracted = _extract_calls_from_response(raw_str, tools)
-        # Also try from the reconstructed token stream (has the raw call:func{} format)
-        if not extracted and _tokens:
-            token_text = "".join(
-                t["text"].decode("utf-8", errors="replace") if isinstance(t["text"], bytes) else str(t["text"])
-                for t in _tokens
-            )
-            extracted = _extract_calls_from_response(token_text, tools)
-            if extracted and verbose:
-                print(f"  [on-device] rescued {len(extracted)} call(s) from token stream")
-        elif extracted and verbose:
-            print(f"  [on-device] rescued {len(extracted)} call(s) from raw string")
-        if extracted:
-            # Post-process to fill missing args from query
-            postprocessed = []
-            for c in extracted:
-                pp = _postprocess_call(c, tools, user_content, verbose=verbose)
-                if pp:
-                    postprocessed.append(pp)
-            if verbose and postprocessed:
-                for fc in postprocessed:
-                    print(f"  [on-device] postprocessed call: {fc['name']}({json.dumps(fc.get('arguments', {}))})")
-            return postprocessed, 0, not bool(postprocessed)
-        return [], 0, True
-
-    time_ms = raw.get("total_time_ms", 0)
-    calls = raw.get("function_calls", [])
+            print(f"  [hybrid] decision: ON-DEVICE")
+        local["source"] = "on-device"
+        return local
 
     if verbose:
-        print(f"  [on-device] confidence={raw.get('confidence')} time={time_ms}ms calls={len(calls)}")
-        print(f"  [on-device] cloud_handoff={raw.get('cloud_handoff')} success={raw.get('success')}")
-        print(f"  [on-device] prefill_tokens={raw.get('prefill_tokens')} decode_tokens={raw.get('decode_tokens')}")
-        print(f"  [on-device] response_text={raw.get('response')!r}")
-        for fc in calls:
-            print(f"  [on-device] raw_call: {fc['name']}({json.dumps(fc.get('arguments', {}))})")
+        print(f"  [hybrid] decision: CLOUD FALLBACK")
 
-    # Fallback: if no formal calls, try to extract from response text
-    if not calls:
-        response_text = raw.get("response", "")
-        extracted = _extract_calls_from_response(response_text, tools)
-        if extracted:
-            calls = extracted
-            if verbose:
-                print(f"  [on-device] extracted {len(extracted)} call(s) from response text")
-
-    # Post-process ALL calls to fill missing/hallucinated args
-    if calls:
-        postprocessed = []
-        for c in calls:
-            pp = _postprocess_call(c, tools, user_content, verbose=verbose)
-            if pp:
-                postprocessed.append(pp)
-        if verbose:
-            for fc in postprocessed:
-                print(f"  [on-device] final_call: {fc['name']}({json.dumps(fc.get('arguments', {}))})")
-        return postprocessed, time_ms, False
-
-    return calls, time_ms, False
-
-
-def generate_hybrid(messages, tools, confidence_threshold=0.99, verbose=False):
-    """
-    Aggressive on-device strategy:
-    1. Try full query on-device (handles both single and multi-call)
-    2. If that fails, split into sub-queries and try each on-device
-    3. Retry with simplified query
-    4. Cloud fallback only when on-device produces nothing usable
-    """
-    user_content = next((m["content"] for m in messages if m["role"] == "user"), "")
-    total_time = 0
-
-    if verbose:
-        tool_names = [t["name"] for t in tools]
-        print(f"\n  [hybrid] query: {user_content!r}")
-        print(f"  [hybrid] tools: {tool_names}")
-
-    # Pre-compute sub-queries to detect multi-intent
-    sub_queries = _split_intents(user_content)
-    expected_intents = len(sub_queries)
-
-    # === Attempt 1: Full query, no splitting ===
-    if verbose:
-        print(f"  [hybrid] attempt 1: full query (expected intents: {expected_intents})")
-    calls, t, parse_failed = _run_on_device(user_content, tools, verbose=verbose)
-    total_time += t
-
-    # _run_on_device already applies _postprocess_call (which includes _repair_call)
-    if not parse_failed and calls:
-        # Accept attempt 1 only if we got enough calls for the detected intents
-        if len(calls) >= expected_intents:
-            if verbose:
-                print(f"  [hybrid] decision: ON-DEVICE (attempt 1, {len(calls)} calls)")
-            return {
-                "function_calls": calls,
-                "total_time_ms": total_time,
-                "confidence": 1.0,
-                "source": "on-device",
-            }
-        elif verbose:
-            print(f"  [hybrid] attempt 1 partial: got {len(calls)} calls but expected {expected_intents}, trying split")
-
-    # === Attempt 2: Split into sub-queries ===
-    if expected_intents > 1:
-        if verbose:
-            print(f"  [hybrid] attempt 2: split into {len(sub_queries)} sub-queries: {sub_queries}")
-
-        all_calls = []
-        for sq in sub_queries:
-            sq_calls, t, _ = _run_on_device(sq, tools, verbose=verbose)
-            total_time += t
-            all_calls.extend(sq_calls)
-
-        # Accept split only if we recovered enough calls (>= 60% of expected)
-        min_required = max(1, math.ceil(expected_intents * 0.6))
-        if len(all_calls) >= min_required:
-            if verbose:
-                print(f"  [hybrid] decision: ON-DEVICE (attempt 2 split, {len(all_calls)}/{expected_intents} calls, min={min_required})")
-            return {
-                "function_calls": all_calls,
-                "total_time_ms": total_time,
-                "confidence": 1.0,
-                "source": "on-device",
-            }
-        elif all_calls and verbose:
-            print(f"  [hybrid] attempt 2 insufficient: got {len(all_calls)} calls but need {min_required}/{expected_intents}")
-
-    # === Attempt 3: Simplified query ===
-    simplified = _simplify_query(user_content)
-    if simplified != user_content:
-        if verbose:
-            print(f"  [hybrid] attempt 3: simplified query: {simplified!r}")
-        calls, t, _ = _run_on_device(simplified, tools, verbose=verbose)
-        total_time += t
-
-        if calls:
-            if verbose:
-                print(f"  [hybrid] decision: ON-DEVICE (attempt 3 simplified, {len(calls)} calls)")
-            return {
-                "function_calls": calls,
-                "total_time_ms": total_time,
-                "confidence": 1.0,
-                "source": "on-device",
-            }
-
-    # === Attempt 4: Cloud fallback (last resort) ===
-    if verbose:
-        print(f"  [hybrid] decision: CLOUD FALLBACK (all on-device attempts failed)")
-
-    cloud = generate_cloud(messages, tools)
+    cloud = generate_cloud(messages, tools, verbose=verbose)
     cloud["source"] = "cloud (fallback)"
-    cloud["total_time_ms"] += total_time
+    cloud["total_time_ms"] += local["total_time_ms"]
 
     # Apply postprocessing to cloud results too
     repaired_cloud = []
     for c in cloud["function_calls"]:
-        r = _postprocess_call(c, tools, user_content, verbose=verbose)
+        r = _postprocess_call(c, tools, query, verbose=verbose)
         if r:
             repaired_cloud.append(r)
     cloud["function_calls"] = repaired_cloud
 
     return cloud
-
-
-def print_result(label, result):
-    """Pretty-print a generation result."""
-    print(f"\n=== {label} ===\n")
-    if "source" in result:
-        print(f"Source: {result['source']}")
-    if "confidence" in result:
-        print(f"Confidence: {result['confidence']:.4f}")
-    if "local_confidence" in result:
-        print(f"Local confidence (below threshold): {result['local_confidence']:.4f}")
-    print(f"Total time: {result['total_time_ms']:.2f}ms")
-    for call in result["function_calls"]:
-        print(f"Function: {call['name']}")
-        print(f"Arguments: {json.dumps(call['arguments'], indent=2)}")
 
 
 ############## Example usage ##############
@@ -816,24 +742,17 @@ if __name__ == "__main__":
         "parameters": {
             "type": "object",
             "properties": {
-                "location": {
-                    "type": "string",
-                    "description": "City name",
-                }
+                "location": {"type": "string", "description": "City name"}
             },
             "required": ["location"],
         },
     }]
 
-    messages = [
-        {"role": "user", "content": "What is the weather in San Francisco?"}
-    ]
+    messages = [{"role": "user", "content": "What is the weather in San Francisco?"}]
 
-    on_device = generate_cactus(messages, tools)
-    print_result("FunctionGemma (On-Device Cactus)", on_device)
-
-    cloud = generate_cloud(messages, tools)
-    print_result("Gemini (Cloud)", cloud)
-
-    hybrid = generate_hybrid(messages, tools)
-    print_result("Hybrid (On-Device + Cloud Fallback)", hybrid)
+    result = generate_hybrid(messages, tools, verbose=True)
+    print(f"\n=== Result ===")
+    print(f"Source: {result.get('source')}")
+    print(f"Time: {result['total_time_ms']:.0f}ms")
+    for call in result["function_calls"]:
+        print(f"  {call['name']}({json.dumps(call['arguments'])})")

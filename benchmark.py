@@ -3,7 +3,8 @@ import sys, os
 sys.path.insert(0, "cactus/python/src")
 os.environ["CACTUS_NO_CLOUD_TELE"] = "1"
 
-import json
+import json, shutil
+from datetime import datetime
 from main import generate_hybrid
 
 
@@ -395,10 +396,40 @@ def compute_f1(predicted_calls, expected_calls):
     return 2 * precision * recall / (precision + recall)
 
 
+class _Tee:
+    """Write to both stdout and a file."""
+    def __init__(self, file, stdout):
+        self.file = file
+        self.stdout = stdout
+    def write(self, data):
+        self.stdout.write(data)
+        self.file.write(data)
+    def flush(self):
+        self.stdout.flush()
+        self.file.flush()
+
+
 def run_benchmark(benchmarks=None, verbose=False):
     """Run all benchmark cases and print results."""
     if benchmarks is None:
         benchmarks = BENCHMARKS
+
+    # Set up log directory and tee stdout to file
+    log_dir = os.path.join(os.path.dirname(__file__), "logs")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = os.path.join(log_dir, timestamp)
+    os.makedirs(run_dir, exist_ok=True)
+
+    # Keep only the 2 most recent log dirs
+    existing = sorted(
+        [d for d in os.listdir(log_dir) if os.path.isdir(os.path.join(log_dir, d))],
+        reverse=True,
+    )
+    for old_dir in existing[2:]:  # keep 2 most recent (current + 1 previous)
+        shutil.rmtree(os.path.join(log_dir, old_dir), ignore_errors=True)
+    log_file = open(os.path.join(run_dir, "output.log"), "w")
+    original_stdout = sys.stdout
+    sys.stdout = _Tee(log_file, original_stdout)
 
     total = len(benchmarks)
     results = []
@@ -416,17 +447,20 @@ def run_benchmark(benchmarks=None, verbose=False):
             elif source == "cloud (fallback)" and local_f1 is not None and local_f1 == 1.0:
                 print(f"  ** UNNECESSARY FALLBACK: local was correct (F1=1.00) but routed to cloud anyway")
 
+        confidence = result.get("confidence", result.get("local_confidence", None))
+
         results.append({
             "name": case["name"],
             "difficulty": case["difficulty"],
+            "query": case["messages"][-1]["content"],
+            "tools": [t["name"] for t in case["tools"]],
             "total_time_ms": result["total_time_ms"],
             "f1": f1,
             "source": source,
+            "confidence": confidence,
             "predicted": result["function_calls"],
             "expected": case["expected_calls"],
-            "local_f1": local_f1,
-            "route_reason": result.get("_route_reason"),
-            "route_trace": result.get("_route_trace"),
+            "local_calls": result.get("_local_calls"),
         })
 
     print("\n=== Benchmark Results ===\n")
@@ -459,6 +493,26 @@ def run_benchmark(benchmarks=None, verbose=False):
     print(f"\n{'='*50}")
     print(f"  TOTAL SCORE: {score:.1f}%")
     print(f"{'='*50}")
+
+    # Save JSON log
+    with open(os.path.join(run_dir, "results.json"), "w") as f:
+        json.dump({
+            "timestamp": timestamp,
+            "score": score,
+            "avg_f1": avg_f1,
+            "avg_time_ms": avg_time,
+            "total_time_ms": total_time,
+            "on_device": on_device_total,
+            "cloud": cloud_total,
+            "total": len(results),
+            "results": results,
+        }, f, indent=2)
+
+    print(f"\nLogs saved to: {run_dir}/")
+
+    # Restore stdout and close log file
+    sys.stdout = original_stdout
+    log_file.close()
 
     return results
 

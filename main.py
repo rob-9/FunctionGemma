@@ -4,14 +4,25 @@ sys.path.insert(0, "cactus/python/src")
 functiongemma_path = "cactus/weights/functiongemma-270m-it"
 
 import json, os, time
-from cactus import cactus_init, cactus_complete, cactus_destroy
+from cactus import cactus_init, cactus_complete, cactus_destroy, cactus_reset
 from google import genai
 from google.genai import types
 
 
+# Change 1: Model singleton — init once, reuse across calls
+_model = None
+
+def _get_model():
+    global _model
+    if _model is None:
+        _model = cactus_init(functiongemma_path)
+    return _model
+
+
 def generate_cactus(messages, tools, verbose=False):
     """Run function calling on-device via FunctionGemma + Cactus."""
-    model = cactus_init(functiongemma_path)
+    model = _get_model()
+    cactus_reset(model)
 
     cactus_tools = [{
         "type": "function",
@@ -26,8 +37,6 @@ def generate_cactus(messages, tools, verbose=False):
         max_tokens=256,
         stop_sequences=["<|im_end|>", "<end_of_turn>"],
     )
-
-    cactus_destroy(model)
 
     if verbose:
         print(f"  [cactus] raw output: {raw_str!r}")

@@ -3,7 +3,7 @@ import sys, os
 sys.path.insert(0, "cactus/python/src")
 os.environ["CACTUS_NO_CLOUD_TELE"] = "1"
 
-import json
+import json, shutil
 from datetime import datetime
 from main import generate_hybrid
 
@@ -419,6 +419,14 @@ def run_benchmark(benchmarks=None, verbose=False):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = os.path.join(log_dir, timestamp)
     os.makedirs(run_dir, exist_ok=True)
+
+    # Keep only the 2 most recent log dirs
+    existing = sorted(
+        [d for d in os.listdir(log_dir) if os.path.isdir(os.path.join(log_dir, d))],
+        reverse=True,
+    )
+    for old_dir in existing[2:]:  # keep 2 most recent (current + 1 previous)
+        shutil.rmtree(os.path.join(log_dir, old_dir), ignore_errors=True)
     log_file = open(os.path.join(run_dir, "output.log"), "w")
     original_stdout = sys.stdout
     sys.stdout = _Tee(log_file, original_stdout)

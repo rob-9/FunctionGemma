@@ -424,6 +424,9 @@ def run_benchmark(benchmarks=None, verbose=False):
             "source": source,
             "predicted": result["function_calls"],
             "expected": case["expected_calls"],
+            "local_f1": local_f1,
+            "route_reason": result.get("_route_reason"),
+            "route_trace": result.get("_route_trace"),
         })
 
     print("\n=== Benchmark Results ===\n")

@@ -327,6 +327,67 @@ def _postprocess_call(call, tools, query, verbose=False):
     return _repair_call(call_out, tools)
 
 
+def _resolve_names_across_calls(calls, query, verbose=False):
+    """Resolve pronoun references across split sub-query results.
+
+    If an earlier call has a proper name (e.g. search_contacts query="Jake"),
+    fill it into later calls that need a person arg but got a wrong value.
+    """
+    if len(calls) < 2:
+        return
+
+    # Collect proper names from the full query
+    query_names = re.findall(r'\b([A-Z][a-z]+)\b', query)
+    stop = {'set', 'send', 'check', 'find', 'look', 'play', 'text', 'remind',
+            'get', 'wake', 'start', 'create', 'what', 'how'}
+    query_names = [n for n in query_names if n.lower() not in stop and n not in ('AM', 'PM', 'I')]
+
+    if not query_names:
+        return
+
+    # Build case-insensitive set for matching
+    query_names_lower = {n.lower() for n in query_names}
+
+    # Collect person names specifically from person-type args in earlier calls
+    person_keys = {'recipient', 'contact', 'to', 'person', 'query'}
+    location_keys = {'location', 'city', 'place'}
+    person_names = []
+    for c in calls:
+        args = c.get("arguments", {})
+        for k, v in args.items():
+            if isinstance(v, str) and v.lower() in query_names_lower:
+                if k in person_keys or c.get("name") == "search_contacts":
+                    person_names.append(v)
+
+    if not person_names:
+        # Fall back to query_names but exclude likely locations
+        # (names used in location-type args)
+        location_names_lower = set()
+        for c in calls:
+            args = c.get("arguments", {})
+            for k, v in args.items():
+                if k in location_keys and isinstance(v, str):
+                    location_names_lower.add(v.lower())
+        person_names = [n for n in query_names if n.lower() not in location_names_lower]
+
+    if not person_names:
+        return
+
+    # Fix person-type args that don't match any known name (case-insensitive)
+    fix_keys = {'recipient', 'contact', 'to', 'person'}
+    for c in calls:
+        args = c.get("arguments", {})
+        for k in list(args):
+            if k not in fix_keys:
+                continue
+            val = args[k]
+            if isinstance(val, str) and val.lower() not in query_names_lower:
+                # This recipient doesn't match any name from the query — fix it
+                args[k] = person_names[0]
+                if verbose:
+                    print(f"  [resolve] {c['name']}.{k}: {val!r} -> {person_names[0]!r}")
+
+
 ############## Model Singletons ##############
 
 _fgemma = None
@@ -450,17 +511,65 @@ def split_query_qwen(query, verbose=False):
         match = re.search(r'\[.*?\]', response, re.DOTALL)
         if match:
             parts = json.loads(match.group())
-            if isinstance(parts, list) and all(isinstance(p, str) for p in parts):
-                parts = [p.strip() for p in parts if p.strip()]
-                if verbose:
-                    print(f"  [split] qwen3 ({split_time:.0f}ms): {json.dumps(parts)}")
-                return parts if parts else [query]
+            if isinstance(parts, list):
+                # Handle list of strings
+                if all(isinstance(p, str) for p in parts):
+                    parts = [p.strip() for p in parts if p.strip()]
+                    if verbose:
+                        print(f"  [split] qwen3 ({split_time:.0f}ms): {json.dumps(parts)}")
+                    return parts if parts else None
+                # Handle list of objects like [{"action": "..."}, ...]
+                if all(isinstance(p, dict) for p in parts):
+                    strs = []
+                    for p in parts:
+                        # Try common keys
+                        for k in ("action", "query", "task", "text", "intent"):
+                            if k in p and isinstance(p[k], str):
+                                strs.append(p[k].strip())
+                                break
+                        else:
+                            # Take first string value
+                            for v in p.values():
+                                if isinstance(v, str):
+                                    strs.append(v.strip())
+                                    break
+                    if strs:
+                        if verbose:
+                            print(f"  [split] qwen3 ({split_time:.0f}ms) objects->strings: {json.dumps(strs)}")
+                        return strs
     except (json.JSONDecodeError, ValueError):
         pass
 
     if verbose:
         print(f"  [split] qwen3 ({split_time:.0f}ms) parse failed, raw: {response!r}")
-    return [query]
+    return None  # Signal failure so caller can try regex fallback
+
+
+def _split_regex(query):
+    """Regex-based fallback splitter for multi-intent queries.
+
+    Splits on ', and ', ' and ', or ', ' boundaries that separate actions.
+    Only splits when each part looks like a distinct action.
+    """
+    # Split on ", and " or " and " but only between action phrases
+    # First try splitting on ", and " (strongest boundary)
+    parts = re.split(r',\s+and\s+', query, flags=re.IGNORECASE)
+    if len(parts) < 2:
+        # Try splitting on ", " then " and " on the last segment
+        comma_parts = re.split(r',\s+', query)
+        if len(comma_parts) >= 2:
+            # Check if last part starts with "and "
+            last = comma_parts[-1]
+            if re.match(r'and\s+', last, re.IGNORECASE):
+                comma_parts[-1] = re.sub(r'^and\s+', '', last, flags=re.IGNORECASE)
+            parts = comma_parts
+        else:
+            # Try plain " and "
+            parts = re.split(r'\s+and\s+', query, flags=re.IGNORECASE)
+
+    # Filter out empty/tiny parts
+    parts = [p.strip().rstrip('.!?') for p in parts if len(p.strip()) > 5]
+    return parts if len(parts) >= 2 else [query]
 
 
 def _might_be_multi_intent(query):
@@ -472,8 +581,9 @@ def _might_be_multi_intent(query):
 def _correct_tool_name(call, tools, sub_query, verbose=False):
     """If sub-query strongly suggests a different tool, swap the tool name.
 
-    Uses prefix-matching to handle stems (e.g., 'remind' → 'reminder').
-    Only swaps if a strictly better match exists.
+    Only swaps when the returned tool has ZERO keyword overlap with the
+    sub-query AND another tool has positive overlap. This prevents
+    false corrections on multi-intent queries.
     """
     q_words = set(re.findall(r'[a-z]{3,}', sub_query.lower()))
     returned_name = call.get("name", "")
@@ -485,13 +595,18 @@ def _correct_tool_name(call, tools, sub_query, verbose=False):
                 continue
             for q_word in q_words:
                 if q_word == t_word or q_word.startswith(t_word) or t_word.startswith(q_word):
-                    score += len(min(q_word, t_word, key=len))
+                    score += 1
                     break
         return score
 
     returned_score = tool_query_score(returned_name)
+
+    # Only correct if the returned tool has zero overlap
+    if returned_score > 0:
+        return
+
     best_name = returned_name
-    best_score = returned_score
+    best_score = 0
 
     for t in tools:
         if t["name"] == returned_name:
@@ -501,7 +616,7 @@ def _correct_tool_name(call, tools, sub_query, verbose=False):
             best_score = score
             best_name = t["name"]
 
-    if best_name != returned_name:
+    if best_name != returned_name and best_score > 0:
         if verbose:
             print(f"  [correct] {returned_name} -> {best_name} (score {best_score} vs {returned_score}) for {sub_query!r}")
         call["name"] = best_name
@@ -584,6 +699,12 @@ def generate_cactus_split(messages, tools, verbose=False):
 
     sub_queries = split_query_qwen(query, verbose)
 
+    # Qwen3 failed — try regex fallback
+    if sub_queries is None:
+        sub_queries = _split_regex(query)
+        if verbose:
+            print(f"  [split] regex fallback: {json.dumps(sub_queries)}")
+
     if len(sub_queries) <= 1:
         return generate_cactus(messages, tools, verbose)
 
@@ -592,6 +713,7 @@ def generate_cactus_split(messages, tools, verbose=False):
     min_confidence = 1.0
     cloud_handoff = False
     parse_failed = False
+    any_heuristic = False
 
     for i, sq in enumerate(sub_queries, 1):
         if verbose:
@@ -602,6 +724,7 @@ def generate_cactus_split(messages, tools, verbose=False):
             heuristic = _match_tool_from_query(sq, tools, verbose)
             if heuristic:
                 sub_result["function_calls"] = [heuristic]
+                any_heuristic = True
         # Tag each call with its sub-query for targeted postprocessing
         for fc in sub_result["function_calls"]:
             fc["_sub_query"] = sq
@@ -626,6 +749,8 @@ def generate_cactus_split(messages, tools, verbose=False):
         merged["_cloud_handoff"] = True
     if parse_failed:
         merged["_parse_failed"] = True
+    if any_heuristic:
+        merged["_heuristic"] = True
     return merged
 
 
@@ -808,7 +933,7 @@ def _validate_local(local, tools, query=""):
     return True, None
 
 
-def generate_hybrid(messages, tools, confidence_threshold=0.95, verbose=False):
+def generate_hybrid(messages, tools, confidence_threshold=0.9, verbose=False):
     """Hybrid: on-device first (with Qwen3 splitting + postprocessing), cloud fallback if untrusted."""
     query = next((m["content"] for m in messages if m["role"] == "user"), "")
     local = generate_cactus_split(messages, tools, verbose=verbose)
@@ -831,6 +956,10 @@ def generate_hybrid(messages, tools, confidence_threshold=0.95, verbose=False):
             postprocessed.append(pp)
     local["function_calls"] = postprocessed
 
+    # Resolve cross-references: if an earlier call found a name (e.g. search_contacts),
+    # fill it into later calls that need a person reference (e.g. send_message recipient)
+    _resolve_names_across_calls(local["function_calls"], query, verbose=verbose)
+
     # Heuristic fallback: if no calls after postprocessing, try matching from query
     if not local["function_calls"]:
         heuristic = _match_tool_from_query(query, tools, verbose)
@@ -838,6 +967,12 @@ def generate_hybrid(messages, tools, confidence_threshold=0.95, verbose=False):
             pp = _postprocess_call(heuristic, tools, query, verbose=verbose)
             if pp:
                 local["function_calls"] = [pp]
+                local["_heuristic"] = True
+
+    # If heuristic filled the calls, args came from query parsing not the model —
+    # ignore FunctionGemma's confidence and trust the extraction
+    if local.get("_heuristic"):
+        local["confidence"] = 1.0
 
     valid, reason = _validate_local(local, tools, query=query)
 

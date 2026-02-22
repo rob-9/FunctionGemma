@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth" style="background-color:#0f0e0b">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#0f0e0b">
+    <title>Cairn — AI That Works Off the Grid</title>
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        serif: ['"DM Serif Display"', 'Georgia', 'serif'],
+                        sans: ['Inter', 'system-ui', 'sans-serif'],
+                    },
+                    colors: {
+                        earth: {
+                            50: '#f0ede6',
+                            400: '#c4956a',
+                            800: '#1a1812',
+                            900: '#0f0e0b',
+                        },
+                        forest: {
+                            400: '#6b9e78',
+                            500: '#5a8a66',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+    <link rel="stylesheet" href="styles.css">
+</head>
+
+<body class="bg-earth-900 text-earth-50 font-sans antialiased overflow-x-hidden" style="background-color:#0f0e0b">
+
+    <!-- Background Orbs -->
+    <div class="fixed inset-0 pointer-events-none z-0" aria-hidden="true">
+        <div class="absolute top-[-10%] left-[-5%] w-[600px] h-[600px] rounded-full bg-earth-400 opacity-[0.07] blur-[120px]"></div>
+        <div class="absolute top-[20%] right-[-10%] w-[400px] h-[400px] rounded-full bg-forest-400 opacity-[0.05] blur-[100px]"></div>
+        <div class="absolute bottom-[10%] left-[20%] w-[500px] h-[500px] rounded-full bg-earth-400 opacity-[0.04] blur-[140px]"></div>
+    </div>
+
+    <!-- Navigation -->
+    <nav id="nav" class="fixed top-0 w-full z-50 transition-all duration-300">
+        <div class="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
+            <a href="#" class="flex items-center gap-2 text-earth-50">
+                <i data-lucide="mountain" class="w-6 h-6 text-earth-400"></i>
+                <span class="font-serif text-xl">Cairn</span>
+            </a>
+            <div class="hidden sm:flex items-center gap-8 text-sm text-earth-50/60">
+                <a href="#how-it-works" class="hover:text-earth-50 transition-colors">How it works</a>
+                <a href="#demo" class="hover:text-earth-50 transition-colors">Demo</a>
+            </div>
+        </div>
+    </nav>
+
+    <main class="relative z-10">
+
+        <!-- Hero -->
+        <section id="hero" class="min-h-screen flex items-center justify-center px-6 pt-20">
+            <div class="max-w-3xl mx-auto text-center">
+                <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-earth-50/10 bg-earth-50/5 text-xs text-earth-400 mb-8 hero-fade" style="--delay: 0">
+                    <i data-lucide="wifi-off" class="w-3.5 h-3.5"></i>
+                    <span>Offline-first AI</span>
+                </div>
+
+                <h1 class="font-serif text-4xl md:text-5xl lg:text-6xl leading-tight mb-6 hero-fade" style="--delay: 1">
+                    Smart answers.<br>
+                    <span class="text-earth-400">No signal required.</span>
+                </h1>
+
+                <p class="text-lg md:text-xl text-earth-50/60 max-w-2xl mx-auto mb-10 leading-relaxed hero-fade" style="--delay: 2">
+                    An AI assistant that lives on your device. Works in the backcountry
+                    without cell service. Gets smarter every time it finds a connection.
+                </p>
+
+                <div class="flex flex-col sm:flex-row items-center justify-center gap-4 mb-16 hero-fade" style="--delay: 3">
+                    <a href="#demo" class="px-6 py-3 bg-earth-400 text-earth-900 rounded-lg font-medium text-sm hover:bg-earth-400/90 transition-all">
+                        Try the demo
+                    </a>
+                    <a href="#how-it-works" class="px-6 py-3 border border-earth-50/15 rounded-lg font-medium text-sm text-earth-50/80 hover:bg-earth-50/5 transition-all">
+                        How it works
+                    </a>
+                </div>
+
+                <!-- Signal Indicator -->
+                <div class="inline-flex items-center gap-3 px-5 py-3 rounded-xl border border-earth-50/10 bg-earth-800/50 backdrop-blur-sm hero-fade" style="--delay: 4">
+                    <div class="flex items-end gap-0.5 h-5" id="signal-bars">
+                        <div class="w-1 rounded-sm transition-all duration-500" style="height:5px; background:rgba(240,237,230,0.15)" data-bar="0"></div>
+                        <div class="w-1 rounded-sm transition-all duration-500" style="height:9px; background:rgba(240,237,230,0.15)" data-bar="1"></div>
+                        <div class="w-1 rounded-sm transition-all duration-500" style="height:13px; background:rgba(240,237,230,0.15)" data-bar="2"></div>
+                        <div class="w-1 rounded-sm transition-all duration-500" style="height:17px; background:rgba(240,237,230,0.15)" data-bar="3"></div>
+                    </div>
+                    <span id="signal-text" class="text-sm text-earth-50/60 transition-all duration-300">No signal — running on-device</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- How It Works -->
+        <section id="how-it-works" class="py-24 md:py-32 px-6">
+            <div class="max-w-6xl mx-auto">
+                <div class="text-center mb-16">
+                    <h2 class="font-serif text-3xl md:text-4xl mb-4">Intelligence that adapts to your signal</h2>
+                    <p class="text-earth-50/50 max-w-lg mx-auto">Three modes. Same device. Seamless transitions.</p>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div class="p-8 rounded-2xl border border-earth-50/[0.06] bg-earth-800/30 hover:bg-earth-800/50 transition-all duration-300" data-reveal style="transition-delay:0ms">
+                        <div class="w-10 h-10 rounded-lg bg-forest-400/15 flex items-center justify-center mb-5">
+                            <i data-lucide="wifi-off" class="w-5 h-5 text-forest-400"></i>
+                        </div>
+                        <h3 class="font-serif text-xl mb-3">No signal</h3>
+                        <p class="text-sm text-earth-50/50 leading-relaxed">
+                            Everything runs on-device. High confidence answers returned instantly. Low confidence answers flagged and queued for later.
+                        </p>
+                    </div>
+
+                    <div class="p-8 rounded-2xl border border-earth-50/[0.06] bg-earth-800/30 hover:bg-earth-800/50 transition-all duration-300" data-reveal style="transition-delay:100ms">
+                        <div class="w-10 h-10 rounded-lg bg-earth-400/15 flex items-center justify-center mb-5">
+                            <i data-lucide="signal" class="w-5 h-5 text-earth-400"></i>
+                        </div>
+                        <h3 class="font-serif text-xl mb-3">Signal found</h3>
+                        <p class="text-sm text-earth-50/50 leading-relaxed">
+                            Low confidence queries route to cloud. The pending queue drains automatically. Corrections are surfaced to you.
+                        </p>
+                    </div>
+
+                    <div class="p-8 rounded-2xl border border-earth-50/[0.06] bg-earth-800/30 hover:bg-earth-800/50 transition-all duration-300" data-reveal style="transition-delay:200ms">
+                        <div class="w-10 h-10 rounded-lg bg-earth-400/15 flex items-center justify-center mb-5">
+                            <i data-lucide="cloud" class="w-5 h-5 text-earth-400"></i>
+                        </div>
+                        <h3 class="font-serif text-xl mb-3">Gets smarter</h3>
+                        <p class="text-sm text-earth-50/50 leading-relaxed">
+                            Every connection syncs better answers back to the device. Pre-cache knowledge packs before your next trip.
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Demo -->
+        <section id="demo" class="py-24 md:py-32 px-6">
+            <div class="max-w-4xl mx-auto">
+                <div class="text-center mb-12">
+                    <h2 class="font-serif text-3xl md:text-4xl mb-4">See it in action</h2>
+                    <p class="text-earth-50/50">Toggle connectivity. Watch the routing change.</p>
+                </div>
+
+                <!-- Connectivity Toggle -->
+                <div class="flex items-center justify-center gap-4 mb-8">
+                    <button id="toggle-offline" class="connectivity-toggle active px-4 py-2 rounded-lg text-sm flex items-center gap-2">
+                        <i data-lucide="wifi-off" class="w-4 h-4"></i>
+                        Offline
+                    </button>
+                    <button id="toggle-online" class="connectivity-toggle px-4 py-2 rounded-lg text-sm flex items-center gap-2">
+                        <i data-lucide="wifi" class="w-4 h-4"></i>
+                        Online
+                    </button>
+                </div>
+
+                <!-- Terminal -->
+                <div class="rounded-2xl border border-earth-50/10 bg-earth-800/40 backdrop-blur-sm overflow-hidden">
+                    <!-- Terminal header -->
+                    <div class="flex items-center justify-between px-4 py-3 border-b border-earth-50/[0.06]">
+                        <div class="flex items-center gap-3">
+                            <div class="flex gap-1.5">
+                                <div class="w-2.5 h-2.5 rounded-full bg-earth-50/15"></div>
+                                <div class="w-2.5 h-2.5 rounded-full bg-earth-50/15"></div>
+                                <div class="w-2.5 h-2.5 rounded-full bg-earth-50/15"></div>
+                            </div>
+                            <span class="text-xs text-earth-50/30 font-mono">cairn inference engine</span>
+                        </div>
+                        <div id="connectivity-badge" class="flex items-center gap-2 text-xs">
+                            <span class="w-2 h-2 rounded-full bg-red-400/80"></span>
+                            <span class="text-earth-50/40 font-mono">offline</span>
+                        </div>
+                    </div>
+
+                    <!-- Terminal body -->
+                    <div class="p-6 md:p-8 min-h-[320px]" id="demo-body">
+                        <div id="demo-placeholder" class="flex flex-col items-center justify-center h-[280px] text-earth-50/30">
+                            <i data-lucide="terminal" class="w-8 h-8 mb-3"></i>
+                            <p class="text-sm">Select a query below to see the routing</p>
+                        </div>
+                        <div id="demo-content" class="hidden"></div>
+                    </div>
+                </div>
+
+                <!-- Pending Queue -->
+                <div id="queue-panel" class="mt-4 rounded-xl border border-earth-50/[0.06] bg-earth-800/20 overflow-hidden hidden">
+                    <div class="flex items-center justify-between px-4 py-3 border-b border-earth-50/[0.06]">
+                        <div class="flex items-center gap-2 text-xs text-earth-50/40 font-mono">
+                            <i data-lucide="inbox" class="w-3.5 h-3.5"></i>
+                            <span>pending verification queue</span>
+                        </div>
+                        <span id="queue-count" class="text-xs text-earth-400 font-mono">0 items</span>
+                    </div>
+                    <div id="queue-items" class="p-3 space-y-2"></div>
+                </div>
+
+                <!-- Example Chips -->
+                <div class="flex flex-wrap justify-center gap-3 mt-6">
+                    <button class="demo-chip px-4 py-2 rounded-lg border border-earth-50/10 bg-earth-800/30 text-sm text-earth-50/60 hover:text-earth-50 hover:border-earth-400/30 transition-all cursor-pointer" data-example="0">
+                        Set an alarm for 6 AM
+                    </button>
+                    <button class="demo-chip px-4 py-2 rounded-lg border border-earth-50/10 bg-earth-800/30 text-sm text-earth-50/60 hover:text-earth-50 hover:border-earth-400/30 transition-all cursor-pointer" data-example="1">
+                        Get weather in Yosemite
+                    </button>
+                    <button class="demo-chip px-4 py-2 rounded-lg border border-earth-50/10 bg-earth-800/30 text-sm text-earth-50/60 hover:text-earth-50 hover:border-earth-400/30 transition-all cursor-pointer" data-example="2">
+                        Text Sarah about the trail
+                    </button>
+                    <button class="demo-chip px-4 py-2 rounded-lg border border-earth-50/10 bg-earth-800/30 text-sm text-earth-50/60 hover:text-earth-50 hover:border-earth-400/30 transition-all cursor-pointer" data-example="3">
+                        Weather + timer + reminder
+                    </button>
+                    <button class="demo-chip px-4 py-2 rounded-lg border border-earth-50/10 bg-earth-800/30 text-sm text-earth-50/60 hover:text-earth-50 hover:border-earth-400/30 transition-all cursor-pointer" data-example="4">
+                        Remind me to refill water
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Architecture -->
+        <section id="architecture" class="py-24 md:py-32 px-6">
+            <div class="max-w-4xl mx-auto">
+                <div class="text-center mb-16">
+                    <h2 class="font-serif text-3xl md:text-4xl mb-4">What's running under the hood</h2>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div class="p-6 rounded-xl border border-earth-50/[0.06] bg-earth-800/20" data-reveal>
+                        <div class="text-xs text-forest-400 font-mono mb-3">ON-DEVICE</div>
+                        <h3 class="font-medium mb-2">FunctionGemma 270M</h3>
+                        <p class="text-sm text-earth-50/50 leading-relaxed">Function-calling model running via Cactus Compute (C++ FFI). Sub-250ms inference. Handles alarms, timers, weather, messaging, music, contacts.</p>
+                    </div>
+                    <div class="p-6 rounded-xl border border-earth-50/[0.06] bg-earth-800/20" data-reveal style="transition-delay:80ms">
+                        <div class="text-xs text-forest-400 font-mono mb-3">ON-DEVICE</div>
+                        <h3 class="font-medium mb-2">Qwen3 1.7B</h3>
+                        <p class="text-sm text-earth-50/50 leading-relaxed">Splits multi-intent queries ("set a timer and check weather") into sub-queries before routing each to FunctionGemma.</p>
+                    </div>
+                    <div class="p-6 rounded-xl border border-earth-50/[0.06] bg-earth-800/20" data-reveal style="transition-delay:160ms">
+                        <div class="text-xs text-earth-400 font-mono mb-3">CLOUD (WHEN AVAILABLE)</div>
+                        <h3 class="font-medium mb-2">Gemini 2.5 Flash</h3>
+                        <p class="text-sm text-earth-50/50 leading-relaxed">Handles complex queries the local model isn't confident about. Only called when signal is available.</p>
+                    </div>
+                    <div class="p-6 rounded-xl border border-earth-50/[0.06] bg-earth-800/20" data-reveal style="transition-delay:240ms">
+                        <div class="text-xs text-earth-400 font-mono mb-3">SYNC</div>
+                        <h3 class="font-medium mb-2">Offline Queue + Drain</h3>
+                        <p class="text-sm text-earth-50/50 leading-relaxed">Low-confidence offline answers are queued. When signal returns, the queue drains through cloud and corrections are surfaced.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- CTA -->
+        <section class="py-24 md:py-32 px-6">
+            <div class="max-w-2xl mx-auto text-center">
+                <h2 class="font-serif text-3xl md:text-4xl mb-6">Go further.</h2>
+                <p class="text-earth-50/50 mb-10">Your AI co-pilot that never needs a cell tower — but gets smarter every time it finds one.</p>
+                <a href="#demo" class="inline-flex items-center gap-2 px-6 py-3 bg-earth-400 text-earth-900 rounded-lg font-medium text-sm hover:bg-earth-400/90 transition-all">
+                    Try the demo
+                    <i data-lucide="arrow-right" class="w-4 h-4"></i>
+                </a>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- Footer -->
+    <footer class="border-t border-earth-50/[0.06] py-8 px-6 relative z-10">
+        <div class="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div class="flex items-center gap-2 text-earth-50/40">
+                <i data-lucide="mountain" class="w-4 h-4"></i>
+                <span class="text-sm font-serif">Cairn</span>
+            </div>
+            <p class="text-xs text-earth-50/30">FunctionGemma + Cactus Compute + Gemini 2.5 Flash</p>
+        </div>
+    </footer>
+
+    <script src="app.js"></script>
+    <script>lucide.createIcons();</script>
+</body>
+</html>

@@ -8,6 +8,9 @@
 /* ── Solid dark background everywhere ── */
 html {
     background-color: #0f0e0b;
+    color-scheme: dark;
+    scrollbar-color: rgba(196, 149, 106, 0.25) #0f0e0b;
+    scrollbar-width: thin;
 }
 
 body {
@@ -20,33 +23,33 @@ html, body {
     overscroll-behavior: none;
 }
 
-/* ── Scrollbar ── */
+/* ── Scrollbar (WebKit) ── */
 ::-webkit-scrollbar { width: 4px; }
 ::-webkit-scrollbar-track { background: #0f0e0b; }
 ::-webkit-scrollbar-thumb { background: rgba(196, 149, 106, 0.25); border-radius: 2px; }
 ::-webkit-scrollbar-thumb:hover { background: rgba(196, 149, 106, 0.4); }
 
-/* Firefox scrollbar */
-html {
-    scrollbar-color: rgba(196, 149, 106, 0.25) #0f0e0b;
-    scrollbar-width: thin;
-    color-scheme: dark;
+/* ── Nav glassmorphism ── */
+#nav {
+    border-bottom: 1px solid transparent;
+    background: transparent;
+    transition: background 0.4s ease, border-bottom-color 0.4s ease, box-shadow 0.4s ease;
 }
 
-/* ── Nav glassmorphism ── */
 .nav-scrolled {
-    background: rgba(15, 14, 11, 0.8);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    border-bottom: 1px solid rgba(240, 237, 230, 0.05);
+    background: rgba(15, 14, 11, 0.95);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border-bottom-color: rgba(240, 237, 230, 0.08);
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
 }
 
 /* ── Hero staggered entrance ── */
 .hero-fade {
     opacity: 0;
-    transform: translateY(16px);
-    animation: hero-enter 0.7s ease-out forwards;
-    animation-delay: calc(var(--delay, 0) * 120ms + 200ms);
+    transform: translateY(30px);
+    animation: hero-enter 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    animation-delay: calc(var(--delay, 0) * 200ms + 200ms);
 }
 
 @keyframes hero-enter {
@@ -56,14 +59,77 @@ html {
     }
 }
 
+/* ── Hero headline glow ── */
+.hero-glow {
+    text-shadow: 0 0 60px rgba(196, 149, 106, 0.2), 0 0 120px rgba(196, 149, 106, 0.08);
+}
+
+/* ── Hero CTA button ── */
+.hero-cta {
+    position: relative;
+    overflow: hidden;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.hero-cta:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 8px 24px rgba(196, 149, 106, 0.25);
+}
+
+.hero-cta::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(105deg, transparent 40%, rgba(255,255,255,0.15) 50%, transparent 60%);
+    transform: translateX(-100%);
+    transition: transform 0.5s ease;
+}
+
+.hero-cta:hover::after {
+    transform: translateX(100%);
+}
+
+/* ── Signal indicator pulse ── */
+.signal-widget {
+    transition: border-color 0.5s ease, background 0.5s ease;
+}
+
+.signal-widget:hover {
+    border-color: rgba(240, 237, 230, 0.15);
+    background: rgba(26, 24, 18, 0.7);
+}
+
 /* ── Scroll reveal ── */
 [data-reveal] {
     opacity: 0;
-    transform: translateY(20px);
-    transition: opacity 0.6s ease, transform 0.6s ease;
+    transform: translateY(28px) scale(0.97);
+    transition: opacity 0.7s cubic-bezier(0.16, 1, 0.3, 1), transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 [data-reveal].visible {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+}
+
+/* ── Card hover lift ── */
+.card-hover {
+    transition: transform 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.card-hover:hover {
+    transform: translateY(-3px);
+    border-color: rgba(240, 237, 230, 0.1);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
+}
+
+/* ── Section headings ── */
+.section-heading {
+    opacity: 0;
+    transform: translateY(20px);
+    transition: opacity 0.6s cubic-bezier(0.16, 1, 0.3, 1), transform 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.section-heading.visible {
     opacity: 1;
     transform: translateY(0);
 }
@@ -101,11 +167,116 @@ html {
 .confidence-fill.medium { background: linear-gradient(90deg, #b8943e, #d4a83e); }
 .confidence-fill.low { background: linear-gradient(90deg, #a05a3c, #c4956a); }
 
-/* ── Demo chip active ── */
+/* ── Demo chip (vertical list) ── */
+.demo-chip {
+    position: relative;
+    display: flex;
+    align-items: center;
+    width: 100%;
+    text-align: left;
+    padding: 10px 14px;
+    border-radius: 10px;
+    border: 1px solid rgba(240, 237, 230, 0.06);
+    background: rgba(240, 237, 230, 0.03);
+    font-size: 13px;
+    color: rgba(240, 237, 230, 0.6);
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.demo-chip:hover {
+    color: #f0ede6;
+    border-color: rgba(240, 237, 230, 0.12);
+    background: rgba(240, 237, 230, 0.06);
+}
+
 .demo-chip.active {
     border-color: rgba(196, 149, 106, 0.4);
     background: rgba(196, 149, 106, 0.08);
     color: #f0ede6;
+}
+
+/* Hover tooltip showing query type */
+.demo-chip::after {
+    content: attr(data-type);
+    position: absolute;
+    left: 100%;
+    top: 50%;
+    transform: translateX(8px) translateY(-50%);
+    white-space: nowrap;
+    font-size: 11px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    color: rgba(240, 237, 230, 0.4);
+    background: rgba(15, 14, 11, 0.95);
+    border: 1px solid rgba(240, 237, 230, 0.08);
+    border-radius: 6px;
+    padding: 4px 8px;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+    z-index: 10;
+}
+
+.demo-chip:hover::after {
+    opacity: 1;
+}
+
+/* On small screens, show tooltip below instead */
+@media (max-width: 1023px) {
+    .demo-chip::after {
+        left: 0;
+        top: 100%;
+        transform: translateX(0) translateY(4px);
+    }
+}
+
+/* ── Chat input ── */
+.chat-input-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 6px 6px 14px;
+    border-radius: 12px;
+    border: 1px solid rgba(240, 237, 230, 0.08);
+    background: rgba(240, 237, 230, 0.03);
+    transition: border-color 0.2s ease;
+}
+
+.chat-input-wrap:focus-within {
+    border-color: rgba(196, 149, 106, 0.3);
+}
+
+.chat-input {
+    flex: 1;
+    background: none;
+    border: none;
+    outline: none;
+    font-size: 13px;
+    color: #f0ede6;
+    font-family: inherit;
+}
+
+.chat-input::placeholder {
+    color: rgba(240, 237, 230, 0.25);
+}
+
+.chat-send {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    border: none;
+    background: rgba(196, 149, 106, 0.15);
+    color: #c4956a;
+    cursor: pointer;
+    transition: background 0.2s ease;
+    flex-shrink: 0;
+}
+
+.chat-send:hover {
+    background: rgba(196, 149, 106, 0.25);
 }
 
 /* ── Connectivity toggle ── */
